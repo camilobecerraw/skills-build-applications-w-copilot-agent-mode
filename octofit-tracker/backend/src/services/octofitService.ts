@@ -29,6 +29,11 @@ export async function createActivity(input: unknown) {
   if (!user || !team) {
     throw Object.assign(new Error('Activity user or team was not found'), { status: 404 });
   }
+  const belongsToTeam = user.team?.toString() === team._id.toString()
+    && team.members.some((member) => member.toString() === user._id.toString());
+  if (!belongsToTeam) {
+    throw Object.assign(new Error('Activity user does not belong to the selected team'), { status: 400 });
+  }
 
   return Activity.create({
     user: user._id,
@@ -62,12 +67,20 @@ export async function createTeam(_input: unknown) {
   }
 
   const memberIds = [...new Set(members as string[])];
-  const memberCount = await User.countDocuments({ _id: { $in: memberIds } });
-  if (memberCount !== memberIds.length) {
+  const memberUsers = await User.find({ _id: { $in: memberIds } }).select('_id team');
+  if (memberUsers.length !== memberIds.length) {
     throw Object.assign(new Error('One or more team members were not found'), { status: 404 });
   }
 
-  return Team.create({ name: name.trim(), mascot: mascot.trim(), members: memberIds });
+  const team = await Team.create({ name: name.trim(), mascot: mascot.trim(), members: memberIds });
+  const previousTeamIds = memberUsers
+    .map((member) => member.team)
+    .filter((teamId): teamId is NonNullable<typeof teamId> => Boolean(teamId));
+  if (previousTeamIds.length > 0) {
+    await Team.updateMany({ _id: { $in: previousTeamIds } }, { $pull: { members: { $in: memberIds } } });
+  }
+  await User.updateMany({ _id: { $in: memberIds } }, { $set: { team: team._id } });
+  return team;
 }
 
 export async function getLeaderboard() {
